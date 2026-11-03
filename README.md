@@ -1,36 +1,54 @@
 # Envato Audio Downloader Master
 
-Userscript para Tampermonkey, versão **2.1**, destinado a auxiliar a identificação e o download de recursos de áudio disponíveis durante a navegação no Envato Elements.
+Userscript para Tampermonkey que ajuda a identificar e salvar **prévias de áudio** acessíveis no Envato Elements. Versão **2.2.0**.
 
-> **Importante:** o script não garante acesso aos arquivos originais nem concede licença de uso. Utilize-o apenas para conteúdos que você tem direito de baixar e usar, respeitando as condições do Envato Elements.
+> **Aviso:** baixar uma prévia não substitui a licença. O Envato oferece o botão oficial **Download preview** nas páginas individuais; prefira esse botão quando disponível. Arquivos originais, assinaturas e licenças não são desbloqueados por este script.
 
-## Recursos existentes
+## Recursos
 
-- Observa URLs de recursos de áudio carregados na página por meio de `PerformanceObserver`.
-- Acrescenta um botão **Baixar** em elementos detectados, quando os seletores configurados encontram o player ou card correspondente.
-- Permite escolher visualmente os seletores de **card**, **player** e **título** pela engrenagem no canto inferior esquerdo.
-- Armazena os seletores escolhidos com `GM_setValue` / `GM_getValue`.
-- Exibe mensagens de depuração no console do navegador.
+- Identifica URLs diretas de áudio carregadas pelo navegador (`mp3`, `m4a`, `wav`, `ogg`, `aac`, `flac` e `opus`).
+- Associa o recurso detectado ao **card ou player recentemente utilizado**, evitando aplicar a última URL observada indiscriminadamente a todos os áudios.
+- Evita criar um botão duplicado quando a página de um item já oferece o botão nativo **Download preview**.
+- Mantém a **engrenagem de configuração** para escolher visualmente o card, o player e o título se a interface do site mudar.
+- Recria a engrenagem quando o React modifica a página, sem executar um `setInterval` a cada segundo.
+- Trata falhas de download e gera nomes de arquivos legíveis.
+- Inclui endereços `@downloadURL` e `@updateURL` para atualizações automáticas do Tampermonkey pelo GitHub Raw.
 
 ## Instalação
 
-1. Instale a extensão Tampermonkey no navegador.
-2. Abra o arquivo [`envato-audio-downloader.user.js`](envato-audio-downloader.user.js) e copie seu conteúdo para um novo script no Tampermonkey (ou importe o arquivo).
-3. Ative o script e abra `https://elements.envato.com/`.
+1. Instale a extensão [Tampermonkey](https://www.tampermonkey.net/) no navegador.
+2. [Abra o userscript no GitHub Raw](https://raw.githubusercontent.com/hpuglia/envato-audio-downloader-master/main/envato-audio-downloader.user.js) e instale-o usando o Tampermonkey.
+3. Abra a [categoria de músicas do Envato Elements](https://elements.envato.com/royalty-free-music).
 
-Após publicar no GitHub, você também poderá instalar pela versão *raw* do arquivo:
+## Como usar
 
-`https://raw.githubusercontent.com/hpuglia/envato-audio-downloader-master/main/envato-audio-downloader.user.js`
+Em páginas com cards de áudio, reproduza uma prévia. Se o navegador expuser uma URL de áudio com extensão reconhecida, surgirá um botão **↓ Prévia** associado ao card. Ao clicar nele, o Tampermonkey solicita o local de salvamento.
 
-> O endereço acima só funcionará depois que os arquivos forem publicados no repositório e a branch principal for `main`.
+Em páginas individuais, use preferencialmente o botão **Download preview** disponibilizado pelo próprio Envato.
 
-## Configuração visual
+### Configuração visual
 
-Clique na engrenagem na parte inferior esquerda, posicione o cursor sobre um elemento da página e clique nele. Escolha `1` para card de áudio, `2` para player fixo ou `3` para título. O seletor é salvo no Tampermonkey.
+Clique na engrenagem verde no canto inferior esquerdo, depois clique no elemento que deseja configurar. Selecione:
 
-## Observações
+- `1` — card da lista;
+- `2` — player da página;
+- `3` — título do áudio.
 
-- Os seletores padrão podem deixar de funcionar se o site alterar seu HTML.
-- A detecção é baseada no nome/URL do recurso e pode não encontrar todo áudio reproduzido pelo site.
-- O script utiliza `@connect *` e `GM_download`, que dependem das permissões do gerenciador de scripts.
-- Este repositório contém o código original da versão 2.1, sem modificações funcionais.
+As escolhas ficam guardadas no armazenamento do Tampermonkey.
+
+## Limitações e diagnósticos
+
+- **Não foi possível verificar os atributos internos do player do Envato em execução**; os seletores padrão são tentativas compatíveis com a versão anterior, não seletores confirmados na estrutura atual.
+- URLs baseadas em `blob:`, streaming segmentado ou fontes sem extensão de áudio não são baixadas pelo mecanismo alternativo.
+- A reprodução de áudio pode ocorrer sem um recurso novo (por exemplo, devido ao cache), e a interface pode ser diferente em páginas de resultados e páginas individuais.
+- Para depuração, abra **F12 → Console** e filtre por `[Envato Master]`.
+- A diretiva `@connect *` permite que o Tampermonkey solicite downloads de CDNs variáveis. O script não faz buscas para descobrir ou desbloquear recursos privados.
+
+## Atualizações
+
+O Tampermonkey verifica o campo `@updateURL` do arquivo publicado na branch `main`. Você também pode abrir o link Raw e instalar a nova versão manualmente.
+
+## Histórico
+
+- **2.2.0** — associação por card/player, prioridade para botão oficial de prévia, observação de DOM sem loop fixo, mensagens de erro, configuração e atualização automática.
+- **2.1** — detecção via `PerformanceObserver`, download com `GM_download` e seleção visual.
