@@ -1,8 +1,13 @@
 // ==UserScript==
 // @name         Envato Audio Downloader Master
-// @namespace    https://tampermonkey.net/
-// @version      2.1
-// @description  Download de áudios do Envato Elements com seletor visual e logs de depuração.
+// @namespace    https://github.com/hpuglia
+// @version      2.2.0
+// @description  Organiza downloads de prévias de áudio do Envato Elements com associação por faixa, seletores visuais e integração ao botão nativo.
+// @author       hpuglia
+// @homepageURL  https://github.com/hpuglia/envato-audio-downloader-master
+// @supportURL   https://github.com/hpuglia/envato-audio-downloader-master/issues
+// @downloadURL  https://raw.githubusercontent.com/hpuglia/envato-audio-downloader-master/main/envato-audio-downloader.user.js
+// @updateURL    https://raw.githubusercontent.com/hpuglia/envato-audio-downloader-master/main/envato-audio-downloader.user.js
 // @match        https://elements.envato.com/*
 // @grant        GM_download
 // @grant        GM_setValue
@@ -11,251 +16,408 @@
 // @run-at       document-end
 // ==/UserScript==
 
-(function () {
+(() => {
     'use strict';
 
-    console.log('[Envato Master] Script iniciado na página:', location.href);
-
-    const STATE = {
-        lastUrl: null,
-        activeTarget: null,
-        targetType: null,
-        configMode: false
+    const PREFIX = '[Envato Master]';
+    const ID = 'envato-master';
+    const ACTIVE_MS = 12000;
+    const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)(?:$|[?#])/i;
+    const ITEM_PATH = /\/[^/]+-[A-Z0-9]{6,12}\/?$/i;
+    const DEFAULT_SELECTORS = Object.freeze({
+        card: '[data-testid="audio-card"]',
+        preview: '[data-testid="audio-preview"]',
+        title: '[data-testid="item-title"]'
+    });
+    const STORAGE_KEYS = {
+        card: 'envato_sel_card',
+        preview: 'envato_sel_preview',
+        title: 'envato_sel_title'
+    };
+    const state = {
+        configuration: false,
+        active: null,
+        lastResource: null,
+        observed: new Set(),
+        toastTimer: null,
+        domTimer: null
     };
 
-    const SELECTORS = {
-        get card() { return GM_getValue('envato_sel_card', '[data-testid="audio-card"]'); },
-        get preview() { return GM_getValue('envato_sel_preview', '[data-testid="audio-preview"]'); },
-        get title() { return GM_getValue('envato_sel_title', '[data-testid="item-title"]'); }
-    };
+    function log(...args) { console.debug(PREFIX, ...args); }
 
-    const AUDIO_REGEX = /\.(m4a|mp3|mp4|wav|ogg|aac|flac|webm)(\?|#|$)/i;
-    const detectedUrls = new Set();
+    function getSelector(type) {
+        try { return GM_getValue(STORAGE_KEYS[type], DEFAULT_SELECTORS[type]); }
+        catch (_) { return DEFAULT_SELECTORS[type]; }
+    }
 
-    // 1. INJEÇÃO DA INTERFACE (Engrenagem e Estilos Diretos no Body)
-    function injectUI() {
-        if (!document.body) return;
+    function query(root, selector) {
+        if (!root || !selector) return null;
+        try { return root.querySelector(selector); } catch (_) { return null; }
+    }
 
-        // Injeta CSS global do script
-        if (!document.getElementById('envato-master-styles')) {
-            const style = document.createElement('style');
-            style.id = 'envato-master-styles';
-            style.textContent = `
-                #envato-master-gear {
-                    position: fixed !important; bottom: 25px !important; left: 25px !important;
-                    width: 50px !important; height: 50px !important; background: #111 !important;
-                    color: #7ee83f !important; font-size: 24px !important; border: 2px solid #7ee83f !important;
-                    border-radius: 50% !important; cursor: pointer !important; z-index: 2147483647 !important;
-                    display: flex !important; align-items: center !important; justify-content: center !important;
-                    box-shadow: 0 4px 15px rgba(0,0,0,0.7) !important; transition: transform 0.2s !important;
-                }
-                #envato-master-gear:hover { transform: scale(1.1) !important; background: #222 !important; }
-                #envato-master-gear.active { background: #ff4444 !important; border-color: #fff !important; color: #fff !important; }
+    function closest(element, selector) {
+        if (!(element instanceof Element) || !selector) return null;
+        try { return element.closest(selector); } catch (_) { return null; }
+    }
 
-                .envato-master-dl-btn {
-                    position: absolute; right: 86px; top: 50%; transform: translateY(-50%);
-                    z-index: 999999; background: #7ee83f !important; color: #111 !important;
-                    border: none !important; border-radius: 6px !important; padding: 6px 14px !important;
-                    font-size: 14px !important; font-weight: bold !important; cursor: pointer !important;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.4) !important;
-                }
-                .envato-master-dl-btn.is-preview { right: 20px; bottom: 20px; top: auto; transform: none; }
-                .envato-master-dl-btn:hover { filter: brightness(1.1); }
+    function isAudioCollection() {
+        return /^\/(royalty-free-music|audio|sound-effects)(\/|$)/i.test(location.pathname);
+    }
 
-                .envato-master-highlight {
-                    outline: 3px dashed #ff4444 !important;
-                    background: rgba(255, 68, 68, 0.25) !important;
-                    cursor: crosshair !important;
-                }
-            `;
-            document.head.appendChild(style);
+    function isItemPage() { return ITEM_PATH.test(location.pathname); }
+
+    function isAudioUrl(raw) {
+        if (!raw) return false;
+        try {
+            const url = new URL(raw, location.href);
+            return /^https?:$/.test(url.protocol) && AUDIO_EXT.test(url.pathname);
+        } catch (_) { return false; }
+    }
+
+    function absoluteAudioUrl(raw) {
+        if (!isAudioUrl(raw)) return null;
+        try { return new URL(raw, location.href).href; } catch (_) { return null; }
+    }
+
+    function cleanName(text) {
+        return String(text || 'envato-preview')
+            .replace(/[\\/:*?"<>|\x00-\x1F]/g, '-')
+            .replace(/\s+/g, ' ')
+            .replace(/[. ]+$/g, '')
+            .trim().slice(0, 110) || 'envato-preview';
+    }
+
+    function getTitle(target) {
+        const custom = query(target, getSelector('title'));
+        const semantic = query(target, 'h1, h2, h3, [data-testid*="title"], a[href]');
+        // Em listas, nunca usa o título global de outra faixa.
+        const globalTitle = isItemPage() ? query(document, getSelector('title')) : null;
+        const candidate = custom || semantic || globalTitle;
+        const value = candidate?.textContent?.trim();
+        if (value) return value;
+        if (target?.textContent && target !== document.body) {
+            const line = target.textContent.split('\n').map(item => item.trim())
+                .find(item => item && !/^(preview|play|baixar|download)$/i.test(item));
+            if (line) return line;
         }
+        return document.querySelector('h1')?.textContent?.trim()
+            || document.title.replace(/\s*\|.*$/, '').replace(/\s*-\s*Envato.*$/i, '').trim();
+    }
 
-        // Injeta o Botão de Configuração (Engrenagem) caso tenha sumido
-        if (!document.getElementById('envato-master-gear')) {
-            const gear = document.createElement('button');
-            gear.id = 'envato-master-gear';
-            gear.innerHTML = '⚙️';
-            gear.title = 'Configurar Seletores (Envato Master)';
-            gear.onclick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                toggleConfigMode();
-            };
-            document.body.appendChild(gear);
-            console.log('[Envato Master] Botão de engrenagem injetado com sucesso.');
+    function filename(target, url) {
+        const ext = new URL(url).pathname.match(AUDIO_EXT)?.[1]?.toLowerCase() || 'mp3';
+        const title = cleanName(getTitle(target)).replace(/\.(mp3|m4a|aac|wav|ogg|oga|opus|flac)$/i, '');
+        return `${title}.${ext}`;
+    }
+
+    function toast(message) {
+        let node = document.getElementById(`${ID}-toast`);
+        if (!node && document.body) {
+            node = document.createElement('div');
+            node.id = `${ID}-toast`;
+            node.setAttribute('role', 'status');
+            node.setAttribute('aria-live', 'polite');
+            document.body.appendChild(node);
         }
+        if (!node) return;
+        node.textContent = message;
+        node.hidden = false;
+        clearTimeout(state.toastTimer);
+        state.toastTimer = setTimeout(() => { node.hidden = true; }, 4500);
     }
 
-    // 2. MODO DE CONFIGURAÇÃO VISUAL
-    function generateSelector(el) {
-        if (el.hasAttribute('data-testid')) return `[data-testid="${el.getAttribute('data-testid')}"]`;
-        if (el.id) return `#${el.id}`;
-        if (el.className && typeof el.className === 'string') {
-            const classes = el.className.split(/\s+/).filter(c => c && !c.includes('envato-master'));
-            if (classes.length > 0) return `.${classes.join('.')}`;
-        }
-        return el.tagName.toLowerCase();
-    }
-
-    function handleMouseOver(e) {
-        if (!STATE.configMode) return;
-        e.target.classList.add('envato-master-highlight');
-    }
-
-    function handleMouseOut(e) {
-        if (!STATE.configMode) return;
-        e.target.classList.remove('envato-master-highlight');
-    }
-
-    function handleClickConfig(e) {
-        if (!STATE.configMode) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-
-        e.target.classList.remove('envato-master-highlight');
-        const selector = generateSelector(e.target);
-
-        const opt = prompt(
-            `Elemento Selecionado:\n${selector}\n\nOnde salvar?\n` +
-            `1 = Card da Lista de Áudios\n` +
-            `2 = Player Fixo da Página (Página Individual)\n` +
-            `3 = Título do Áudio\n\nDigite 1, 2 ou 3:`
+    function nativePreviewExists() {
+        if (!isItemPage()) return false;
+        return [...document.querySelectorAll('a, button, [role="button"]')].some(element =>
+            /^(download preview|baixar pr[eé]via|descargar vista previa)$/i
+                .test(element.textContent?.trim() || element.getAttribute('aria-label') || '')
         );
-
-        if (opt === '1') { GM_setValue('envato_sel_card', selector); alert('✅ Card salvo!'); }
-        else if (opt === '2') { GM_setValue('envato_sel_preview', selector); alert('✅ Player salvo!'); }
-        else if (opt === '3') { GM_setValue('envato_sel_title', selector); alert('✅ Título salvo!'); }
-
-        toggleConfigMode(false);
     }
 
-    function toggleConfigMode(force) {
-        STATE.configMode = force !== undefined ? force : !STATE.configMode;
-        const gear = document.getElementById('envato-master-gear');
-
-        if (STATE.configMode) {
-            if (gear) { gear.classList.add('active'); gear.textContent = '❌'; }
-            document.addEventListener('mouseover', handleMouseOver, true);
-            document.addEventListener('mouseout', handleMouseOut, true);
-            document.addEventListener('click', handleClickConfig, true);
-            console.log('[Envato Master] Modo de configuração ATIVADO.');
-        } else {
-            if (gear) { gear.classList.remove('active'); gear.textContent = '⚙️'; }
-            document.querySelectorAll('.envato-master-highlight').forEach(el => el.classList.remove('envato-master-highlight'));
-            document.removeEventListener('mouseover', handleMouseOver, true);
-            document.removeEventListener('mouseout', handleMouseOut, true);
-            document.removeEventListener('click', handleClickConfig, true);
-            console.log('[Envato Master] Modo de configuração DESATIVADO.');
+    function downloadAudio(button, target, url) {
+        if (typeof GM_download !== 'function') {
+            toast('Tampermonkey não disponibilizou GM_download.');
+            return;
         }
-    }
-
-    // 3. CAPTURA DE ÁUDIO E DOWNLOAD
-    function sanitize(name) {
-        return String(name || 'audio-envato').replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim().slice(0, 100);
-    }
-
-    function getFilename(target, type, url) {
-        const ext = (url.match(AUDIO_REGEX) || [])[1]?.toLowerCase() || 'mp3';
-        let title = '';
-
-        if (type === 'card' && target) {
-            const lines = (target.innerText || '').split('\n').map(l => l.trim()).filter(l => l && !/preview|baixar/i.test(l));
-            title = lines[0] || 'card-audio';
-        } else {
-            try {
-                const titleEl = document.querySelector(SELECTORS.title);
-                if (titleEl) title = titleEl.innerText;
-            } catch(e){}
-            if (!title) title = document.title.replace(/\|.*$/g, '').replace(/Envato Elements/ig, '').trim();
-        }
-        return `${sanitize(title)}.${ext}`;
-    }
-
-    function injectButton(target, type, url) {
-        if (!target) return;
-        const existing = target.querySelector('.envato-master-dl-btn');
-        if (existing) {
-            if (existing.dataset.url === url) return;
-            existing.remove();
-        }
-
-        const btn = document.createElement('button');
-        btn.className = `envato-master-dl-btn ${type === 'preview' ? 'is-preview' : ''}`;
-        btn.innerHTML = '⬇ Baixar';
-        btn.dataset.url = url;
-
-        btn.onclick = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            btn.innerHTML = '⏳...';
-            GM_download({
-                url: url,
-                name: getFilename(target, type, url),
-                saveAs: true,
-                onload: () => { btn.innerHTML = '✅ OK'; setTimeout(() => btn.innerHTML = '⬇ Baixar', 2000); },
-                onerror: () => { btn.innerHTML = '❌ Erro'; setTimeout(() => btn.innerHTML = '⬇ Baixar', 2000); }
-            });
+        button.disabled = true;
+        button.textContent = 'Baixando…';
+        const finish = (message, label) => {
+            if (!button.isConnected) return;
+            button.disabled = false;
+            button.textContent = label;
+            toast(message);
         };
-
-        if (getComputedStyle(target).position === 'static') target.style.position = 'relative';
-        target.appendChild(btn);
-        console.log('[Envato Master] Botão de download injetado no elemento:', target);
-    }
-
-    document.addEventListener('mousedown', (e) => {
-        if (STATE.configMode) return;
-        const target = e.target;
-        if (!(target instanceof Element)) return;
-
         try {
-            const card = target.closest(SELECTORS.card);
-            if (card) { STATE.activeTarget = card; STATE.targetType = 'card'; return; }
-
-            const preview = target.closest(SELECTORS.preview);
-            if (preview) { STATE.activeTarget = preview; STATE.targetType = 'preview'; }
-        } catch(e){}
-    }, true);
-
-    function handleResource(url) {
-        if (!url || !AUDIO_REGEX.test(url) || url.startsWith('blob:') || url.startsWith('data:')) return;
-        try { url = new URL(url, location.href).href; } catch(e) { return; }
-
-        if (!detectedUrls.has(url)) {
-            detectedUrls.add(url);
-            console.log('[Envato Master] Áudio detectado na rede:', url);
-        }
-
-        STATE.lastUrl = url;
-
-        let injected = false;
-        try {
-            const pagePlayer = document.querySelector(SELECTORS.preview);
-            if (pagePlayer) {
-                injectButton(pagePlayer, 'preview', url);
-                injected = true;
-            }
-        } catch(e) {}
-
-        if (!injected && STATE.activeTarget && document.contains(STATE.activeTarget)) {
-            injectButton(STATE.activeTarget, STATE.targetType, url);
-        }
-    }
-
-    // 4. INICIALIZAÇÃO E LOOP DE VIGILÂNCIA SPA
-    function init() {
-        injectUI();
-        try {
-            const obs = new PerformanceObserver((list) => {
-                list.getEntries().forEach(entry => handleResource(entry.name));
+            GM_download({
+                url,
+                name: filename(target, url),
+                saveAs: true,
+                onload: () => finish('Prévia salva. Confira os direitos de uso.', '↓ Prévia'),
+                onerror: error => {
+                    log('Falha no download', error);
+                    finish('Não foi possível baixar esta prévia.', '↓ Tentar novamente');
+                },
+                ontimeout: () => finish('O download expirou.', '↓ Tentar novamente')
             });
-            obs.observe({ type: 'resource', buffered: true });
-        } catch(e) {}
+        } catch (error) {
+            log('Erro ao iniciar download', error);
+            finish('O navegador bloqueou o download da prévia.', '↓ Tentar novamente');
+        }
     }
 
-    // Executa imediatamente e garante re-checagem contínua caso o React recrie o DOM
-    init();
-    setInterval(injectUI, 1000);
+    function addButton(target, type, rawUrl) {
+        const url = absoluteAudioUrl(rawUrl);
+        if (!url || !target?.isConnected) return;
+        // Nas páginas individuais, o próprio Envato oferece "Download preview".
+        if (type === 'preview' && nativePreviewExists()) return;
+        let button = query(target, `:scope > .${ID}-download`);
+        if (!button) {
+            button = document.createElement('button');
+            button.type = 'button';
+            button.className = `${ID}-download ${ID}-${type}`;
+            button.textContent = '↓ Prévia';
+            button.title = 'Baixar somente a prévia reproduzida (não concede licença)';
+            button.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                downloadAudio(button, target, button.dataset.url);
+            });
+            if (getComputedStyle(target).position === 'static') {
+                target.style.position = 'relative';
+            }
+            target.appendChild(button);
+        }
+        button.dataset.url = url;
+        button.title = `Baixar prévia detectada: ${filename(target, url)}`;
+        log('Prévia associada ao', type, getTitle(target));
+    }
 
+    function assetLinkIn(element) {
+        return [...element.querySelectorAll('a[href]')].some(a => {
+            try {
+                const href = new URL(a.getAttribute('href'), location.href);
+                return href.hostname === location.hostname && ITEM_PATH.test(href.pathname);
+            } catch (_) { return false; }
+        });
+    }
+
+    function findTarget(element) {
+        const card = closest(element, getSelector('card'));
+        if (card) return { element: card, type: 'card' };
+        const preview = closest(element, getSelector('preview'));
+        if (preview) return { element: preview, type: 'preview' };
+        if (isAudioCollection()) {
+            const row = closest(element, 'article, li, [role="listitem"]');
+            if (row && assetLinkIn(row)) return { element: row, type: 'card' };
+        }
+        return null;
+    }
+
+    function sourceIn(target) {
+        if (!target) return null;
+        const media = target.matches?.('audio') ? target : query(target, 'audio');
+        return absoluteAudioUrl(media?.currentSrc || media?.src || query(media, 'source[src]')?.src);
+    }
+
+    function bindResource(rawUrl) {
+        const url = absoluteAudioUrl(rawUrl);
+        if (!url) return;
+        if (!state.observed.has(url)) {
+            state.observed.add(url);
+            if (state.observed.size > 160) state.observed.delete(state.observed.values().next().value);
+            log('Recurso de prévia observado', new URL(url).pathname);
+        }
+        state.lastResource = url;
+        if (state.active && Date.now() - state.active.at <= ACTIVE_MS) {
+            const { element, type } = state.active;
+            if (element.isConnected) {
+                addButton(element, type, url);
+                return;
+            }
+        }
+        // Sem interação recente, só associa à página individual de uma faixa.
+        if (isItemPage()) {
+            const player = query(document, getSelector('preview')) || query(document, 'audio')?.parentElement;
+            if (player) addButton(player, 'preview', url);
+        }
+    }
+
+    function beginPlayback(target) {
+        state.active = { ...target, at: Date.now() };
+        const inline = sourceIn(target.element);
+        if (inline) bindResource(inline);
+        log('Player ativo:', target.type, getTitle(target.element));
+    }
+
+    function onPointerDown(event) {
+        if (state.configuration || closest(event.target, `#${ID}-gear, .${ID}-download`)) return;
+        const target = findTarget(event.target);
+        if (target) beginPlayback(target);
+    }
+
+    function onPlay(event) {
+        const media = event.target;
+        if (!(media instanceof HTMLMediaElement)) return;
+        const target = findTarget(media) || (isItemPage()
+            ? { element: query(document, getSelector('preview')) || media.parentElement, type: 'preview' }
+            : null);
+        if (target) beginPlayback(target);
+        const url = absoluteAudioUrl(media.currentSrc || media.src);
+        if (url) bindResource(url);
+    }
+
+    function quote(value) {
+        if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(value);
+        return String(value).replace(/[^a-zA-Z0-9_-]/g, char => `\\${char}`);
+    }
+
+    function selectorFor(element) {
+        if (element.id) return `#${quote(element.id)}`;
+        const testId = element.getAttribute('data-testid');
+        if (testId) return `[data-testid="${testId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`;
+        const path = [];
+        let current = element;
+        for (let depth = 0; current && depth < 5; depth++, current = current.parentElement) {
+            let part = current.tagName.toLowerCase();
+            if (current.id) {
+                path.unshift(`#${quote(current.id)}`);
+                break;
+            }
+            const parent = current.parentElement;
+            if (parent) {
+                const sameTag = [...parent.children].filter(child => child.tagName === current.tagName);
+                if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(current) + 1})`;
+            }
+            path.unshift(part);
+            const selector = path.join(' > ');
+            try { if (document.querySelectorAll(selector).length === 1) return selector; } catch (_) { /* ignore */ }
+        }
+        return path.join(' > ');
+    }
+
+    function onConfigSelect(event) {
+        if (!state.configuration || closest(event.target, `#${ID}-gear, #${ID}-toast`)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        const element = event.target instanceof Element ? event.target : event.target.parentElement;
+        const selector = selectorFor(element);
+        const answer = prompt(
+            `Seletor encontrado:\n${selector}\n\nSalvar como:\n1 = Card da lista\n2 = Player da página\n3 = Título\n\nDigite 1, 2 ou 3:`
+        );
+        const key = { '1': 'card', '2': 'preview', '3': 'title' }[answer?.trim()];
+        if (key) {
+            try {
+                document.querySelector(selector);
+                GM_setValue(STORAGE_KEYS[key], selector);
+                toast(`Seletor de ${key} salvo.`);
+                log('Seletor salvo:', key, selector);
+            } catch (error) { toast('Não foi possível salvar esse seletor.'); log(error); }
+        }
+        toggleConfiguration(false);
+    }
+
+    function toggleConfiguration(force) {
+        state.configuration = typeof force === 'boolean' ? force : !state.configuration;
+        const gear = document.getElementById(`${ID}-gear`);
+        if (gear) {
+            gear.textContent = state.configuration ? '×' : '⚙';
+            gear.setAttribute('aria-pressed', String(state.configuration));
+            gear.classList.toggle('active', state.configuration);
+        }
+        if (state.configuration) {
+            document.addEventListener('click', onConfigSelect, true);
+            document.addEventListener('mouseover', highlight, true);
+            document.addEventListener('mouseout', unhighlight, true);
+            toast('Clique no card, player ou título que deseja configurar.');
+        } else {
+            document.removeEventListener('click', onConfigSelect, true);
+            document.removeEventListener('mouseover', highlight, true);
+            document.removeEventListener('mouseout', unhighlight, true);
+            document.querySelectorAll(`.${ID}-highlight`).forEach(el => el.classList.remove(`${ID}-highlight`));
+        }
+    }
+
+    function highlight(event) {
+        if (state.configuration && event.target instanceof Element && !closest(event.target, `#${ID}-gear, #${ID}-toast`)) {
+            event.target.classList.add(`${ID}-highlight`);
+        }
+    }
+    function unhighlight(event) {
+        if (event.target instanceof Element) event.target.classList.remove(`${ID}-highlight`);
+    }
+
+    function ensureUi() {
+        if (!document.body) return;
+        if (!document.getElementById(`${ID}-styles`)) {
+            const style = document.createElement('style');
+            style.id = `${ID}-styles`;
+            style.textContent = `
+                #${ID}-gear { position:fixed !important; left:22px !important; bottom:22px !important;
+                    width:48px !important; height:48px !important; border:2px solid #7ee83f !important;
+                    border-radius:50% !important; background:#121212 !important; color:#7ee83f !important;
+                    font-size:24px !important; z-index:2147483647 !important; cursor:pointer !important;
+                    display:flex !important; justify-content:center !important; align-items:center !important; }
+                #${ID}-gear.active { color:#fff !important; border-color:#ff6060 !important; }
+                .${ID}-download { position:absolute !important; right:84px !important; top:50% !important;
+                    transform:translateY(-50%) !important; z-index:2147483000 !important;
+                    color:#101010 !important; background:#7ee83f !important; border:0 !important;
+                    border-radius:6px !important; padding:7px 10px !important; font:600 13px sans-serif !important;
+                    cursor:pointer !important; white-space:nowrap !important; }
+                .${ID}-download.${ID}-preview { right:15px !important; top:auto !important;
+                    bottom:15px !important; transform:none !important; }
+                .${ID}-download:disabled { opacity:.65 !important; cursor:progress !important; }
+                .${ID}-highlight { outline:3px dashed #ff6060 !important; cursor:crosshair !important; }
+                #${ID}-toast { position:fixed !important; left:22px !important; bottom:82px !important;
+                    max-width:min(380px,85vw) !important; padding:9px 13px !important;
+                    border-radius:7px !important; background:#151515 !important; color:#fff !important;
+                    font:13px/1.4 sans-serif !important; box-shadow:0 3px 14px #0008 !important;
+                    z-index:2147483647 !important; pointer-events:none !important; }
+                #${ID}-toast[hidden] { display:none !important; }
+            `;
+            (document.head || document.documentElement).appendChild(style);
+        }
+        if (!document.getElementById(`${ID}-gear`)) {
+            const gear = document.createElement('button');
+            gear.id = `${ID}-gear`;
+            gear.type = 'button';
+            gear.textContent = state.configuration ? '×' : '⚙';
+            gear.setAttribute('aria-label', 'Configurar seletores do Envato Master');
+            gear.setAttribute('aria-pressed', String(state.configuration));
+            gear.title = 'Configurar seletores dos cards, players e títulos';
+            gear.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                toggleConfiguration();
+            });
+            document.body.appendChild(gear);
+        }
+    }
+
+    function start() {
+        ensureUi();
+        document.addEventListener('pointerdown', onPointerDown, true);
+        document.addEventListener('play', onPlay, true);
+        try {
+            const observer = new PerformanceObserver(list => {
+                for (const entry of list.getEntries()) bindResource(entry.name);
+            });
+            observer.observe({ type: 'resource', buffered: true });
+        } catch (error) { log('PerformanceObserver indisponível', error); }
+        // Apenas restaura os controles se a navegação SPA recriar o DOM.
+        const domObserver = new MutationObserver(() => {
+            if (document.getElementById(`${ID}-gear`) && document.getElementById(`${ID}-styles`)) return;
+            if (state.domTimer) return;
+            state.domTimer = setTimeout(() => {
+                state.domTimer = null;
+                ensureUi();
+            }, 250);
+        });
+        domObserver.observe(document.documentElement, { childList: true, subtree: true });
+        log('Versão 2.2.0 iniciada:', location.pathname);
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+    else start();
 })();
