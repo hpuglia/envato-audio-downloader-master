@@ -1,6 +1,6 @@
 # Envato Audio Downloader Master
 
-Userscript para Tampermonkey que ajuda a identificar e salvar **prévias de áudio** acessíveis no Envato Elements. Versão **2.2.0**.
+Userscript para Tampermonkey que ajuda a identificar e salvar **prévias de áudio** acessíveis no Envato Elements. Versão **2.3.0**.
 
 > **Aviso:** baixar uma prévia não substitui a licença. O Envato oferece o botão oficial **Download preview** nas páginas individuais; prefira esse botão quando disponível. Arquivos originais, assinaturas e licenças não são desbloqueados por este script.
 
@@ -9,7 +9,7 @@ Userscript para Tampermonkey que ajuda a identificar e salvar **prévias de áud
 - Identifica URLs diretas de áudio carregadas pelo navegador (`mp3`, `m4a`, `wav`, `ogg`, `aac`, `flac` e `opus`).
 - Associa o recurso detectado ao **card ou player recentemente utilizado**, evitando aplicar a última URL observada indiscriminadamente a todos os áudios.
 - Evita criar um botão duplicado quando a página de um item já oferece o botão nativo **Download preview**.
-- Mantém a **engrenagem de configuração** para escolher visualmente o card, o player e o título se a interface do site mudar.
+- Inclui um **painel compacto de configuração**, com indicador de estado, seleção visual de card/player/título e botão para restaurar seletores.
 - Recria a engrenagem quando o React modifica a página, sem executar um `setInterval` a cada segundo.
 - Trata falhas de download e gera nomes de arquivos legíveis.
 - Inclui endereços `@downloadURL` e `@updateURL` para atualizações automáticas do Tampermonkey pelo GitHub Raw.
@@ -28,13 +28,9 @@ Em páginas individuais, use preferencialmente o botão **Download preview** dis
 
 ### Configuração visual
 
-Clique na engrenagem verde no canto inferior esquerdo, depois clique no elemento que deseja configurar. Selecione:
+Clique na engrenagem no canto inferior esquerdo para abrir o painel. Escolha **Card de áudio**, **Player individual** ou **Título da faixa**, depois clique no elemento correspondente na página. Para cancelar, pressione **Esc** ou clique novamente na engrenagem.
 
-- `1` — card da lista;
-- `2` — player da página;
-- `3` — título do áudio.
-
-As escolhas ficam guardadas no armazenamento do Tampermonkey.
+O painel informa se uma prévia foi detectada ou se um download foi concluído. Use **Restaurar seletores padrão** caso queira desfazer as configurações personalizadas. As escolhas ficam guardadas no armazenamento do Tampermonkey.
 
 ## Limitações e diagnósticos
 
@@ -50,5 +46,6 @@ O Tampermonkey verifica o campo `@updateURL` do arquivo publicado na branch `mai
 
 ## Histórico
 
+- **2.3.0** — novo painel visual e responsivo, sem janela de prompt, status de detecção/download, seletores com cancelamento por Esc, restauração de padrões, melhorias de acessibilidade e botões de prévia estilizados. A captura/download de áudio da 2.2.0 foi preservada.
 - **2.2.0** — associação por card/player, prioridade para botão oficial de prévia, observação de DOM sem loop fixo, mensagens de erro, configuração e atualização automática.
 - **2.1** — detecção via `PerformanceObserver`, download com `GM_download` e seleção visual.
