@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Envato Audio Downloader Master
 // @namespace    https://github.com/hpuglia
-// @version      2.2.0
-// @description  Organiza downloads de prévias de áudio do Envato Elements com associação por faixa, seletores visuais e integração ao botão nativo.
+// @version      2.3.0
+// @description  Prévias de áudio com downloads organizados, painel compacto, seletores visuais e integração com o player do Envato Elements.
 // @author       hpuglia
 // @homepageURL  https://github.com/hpuglia/envato-audio-downloader-master
 // @supportURL   https://github.com/hpuglia/envato-audio-downloader-master/issues
@@ -40,7 +40,11 @@
         lastResource: null,
         observed: new Set(),
         toastTimer: null,
-        domTimer: null
+        domTimer: null,
+        panelOpen: false,
+        pickerKey: null,
+        uiStatus: 'Aguardando reprodução',
+        uiTone: 'idle'
     };
 
     function log(...args) { console.debug(PREFIX, ...args); }
@@ -126,6 +130,15 @@
         state.toastTimer = setTimeout(() => { node.hidden = true; }, 4500);
     }
 
+    function setUiStatus(message, tone = 'idle') {
+        state.uiStatus = message;
+        state.uiTone = tone;
+        const status = document.getElementById(`${ID}-status`);
+        const indicator = document.getElementById(`${ID}-indicator`);
+        if (status) status.textContent = message;
+        if (indicator) indicator.dataset.tone = tone;
+    }
+
     function nativePreviewExists() {
         if (!isItemPage()) return false;
         return [...document.querySelectorAll('a, button, [role="button"]')].some(element =>
@@ -141,11 +154,14 @@
         }
         button.disabled = true;
         button.textContent = 'Baixando…';
+        setUiStatus('Download em andamento', 'busy');
         const finish = (message, label) => {
-            if (!button.isConnected) return;
-            button.disabled = false;
-            button.textContent = label;
+            if (button.isConnected) {
+                button.disabled = false;
+                button.textContent = label;
+            }
             toast(message);
+            setUiStatus(label === '↓ Prévia' ? 'Prévia salva' : 'Download não concluído', label === '↓ Prévia' ? 'success' : 'error');
         };
         try {
             GM_download({
@@ -227,6 +243,7 @@
             state.observed.add(url);
             if (state.observed.size > 160) state.observed.delete(state.observed.values().next().value);
             log('Recurso de prévia observado', new URL(url).pathname);
+            setUiStatus('Prévia detectada', 'ready');
         }
         state.lastResource = url;
         if (state.active && Date.now() - state.active.at <= ACTIVE_MS) {
@@ -251,7 +268,8 @@
     }
 
     function onPointerDown(event) {
-        if (state.configuration || closest(event.target, `#${ID}-gear, .${ID}-download`)) return;
+        if (state.configuration || closest(event.target, `#${ID}-gear, #${ID}-panel, .${ID}-download`)) return;
+        if (state.panelOpen) setPanelOpen(false);
         const target = findTarget(event.target);
         if (target) beginPlayback(target);
     }
@@ -296,41 +314,57 @@
         return path.join(' > ');
     }
 
+    function setPanelOpen(open) {
+        state.panelOpen = Boolean(open) && !state.configuration;
+        const panel = document.getElementById(`${ID}-panel`);
+        const gear = document.getElementById(`${ID}-gear`);
+        if (panel) panel.hidden = !state.panelOpen;
+        if (gear) {
+            gear.setAttribute('aria-expanded', String(state.panelOpen));
+            gear.classList.toggle('open', state.panelOpen);
+        }
+    }
+
     function onConfigSelect(event) {
-        if (!state.configuration || closest(event.target, `#${ID}-gear, #${ID}-toast`)) return;
+        if (!state.configuration || closest(event.target, `#${ID}-gear, #${ID}-toast, #${ID}-panel, .${ID}-download`)) return;
+        const element = event.target instanceof Element ? event.target : event.target?.parentElement;
+        if (!element) return;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        const element = event.target instanceof Element ? event.target : event.target.parentElement;
         const selector = selectorFor(element);
-        const answer = prompt(
-            `Seletor encontrado:\n${selector}\n\nSalvar como:\n1 = Card da lista\n2 = Player da página\n3 = Título\n\nDigite 1, 2 ou 3:`
-        );
-        const key = { '1': 'card', '2': 'preview', '3': 'title' }[answer?.trim()];
-        if (key) {
+        const key = state.pickerKey;
+        if (key && STORAGE_KEYS[key]) {
             try {
                 document.querySelector(selector);
                 GM_setValue(STORAGE_KEYS[key], selector);
-                toast(`Seletor de ${key} salvo.`);
                 log('Seletor salvo:', key, selector);
-            } catch (error) { toast('Não foi possível salvar esse seletor.'); log(error); }
-        }
-        toggleConfiguration(false);
+                toggleConfiguration(false);
+                toast(`Seletor de ${{ card: 'card', preview: 'player', title: 'título' }[key]} salvo.`);
+            } catch (error) {
+                toggleConfiguration(false);
+                toast('Não foi possível salvar esse seletor.');
+                log(error);
+            }
+        } else toggleConfiguration(false);
     }
 
-    function toggleConfiguration(force) {
-        state.configuration = typeof force === 'boolean' ? force : !state.configuration;
+    function toggleConfiguration(enable, key = null) {
+        state.configuration = Boolean(enable);
+        state.pickerKey = state.configuration ? key : null;
         const gear = document.getElementById(`${ID}-gear`);
         if (gear) {
             gear.textContent = state.configuration ? '×' : '⚙';
             gear.setAttribute('aria-pressed', String(state.configuration));
             gear.classList.toggle('active', state.configuration);
+            gear.setAttribute('aria-label', state.configuration ? 'Cancelar seleção' : 'Abrir painel Envato Master');
         }
         if (state.configuration) {
+            setPanelOpen(false);
             document.addEventListener('click', onConfigSelect, true);
             document.addEventListener('mouseover', highlight, true);
             document.addEventListener('mouseout', unhighlight, true);
-            toast('Clique no card, player ou título que deseja configurar.');
+            toast(`Selecione ${{ card: 'um card de áudio', preview: 'o player', title: 'o título de uma faixa' }[key] || 'um elemento'}. Esc para cancelar.`);
         } else {
             document.removeEventListener('click', onConfigSelect, true);
             document.removeEventListener('mouseover', highlight, true);
@@ -340,12 +374,31 @@
     }
 
     function highlight(event) {
-        if (state.configuration && event.target instanceof Element && !closest(event.target, `#${ID}-gear, #${ID}-toast`)) {
+        if (state.configuration && event.target instanceof Element &&
+            !closest(event.target, `#${ID}-gear, #${ID}-toast, #${ID}-panel, .${ID}-download`)) {
             event.target.classList.add(`${ID}-highlight`);
         }
     }
     function unhighlight(event) {
         if (event.target instanceof Element) event.target.classList.remove(`${ID}-highlight`);
+    }
+
+    function handlePanelAction(event) {
+        const action = event.target.closest?.('button[data-action]')?.dataset.action;
+        if (!action) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (action === 'close') setPanelOpen(false);
+        else if (action === 'reset') {
+            for (const key of Object.keys(STORAGE_KEYS)) {
+                try { GM_setValue(STORAGE_KEYS[key], DEFAULT_SELECTORS[key]); }
+                catch (error) { log('Falha ao restaurar seletor:', key, error); toast('Erro ao restaurar seletores.'); return; }
+            }
+            toast('Seletores restaurados para o padrão.');
+        } else if (action.startsWith('pick-')) {
+            const key = action.slice(5);
+            if (STORAGE_KEYS[key]) toggleConfiguration(true, key);
+        }
     }
 
     function ensureUi() {
@@ -354,27 +407,89 @@
             const style = document.createElement('style');
             style.id = `${ID}-styles`;
             style.textContent = `
-                #${ID}-gear { position:fixed !important; left:22px !important; bottom:22px !important;
-                    width:48px !important; height:48px !important; border:2px solid #7ee83f !important;
-                    border-radius:50% !important; background:#121212 !important; color:#7ee83f !important;
-                    font-size:24px !important; z-index:2147483647 !important; cursor:pointer !important;
-                    display:flex !important; justify-content:center !important; align-items:center !important; }
-                #${ID}-gear.active { color:#fff !important; border-color:#ff6060 !important; }
+                #${ID}-gear, #${ID}-panel, #${ID}-toast, .${ID}-download { box-sizing:border-box !important; }
+                #${ID}-gear { position:fixed !important; left:20px !important; bottom:20px !important;
+                    width:48px !important; height:48px !important; border:1px solid #718b94 !important;
+                    border-radius:15px !important; background:linear-gradient(145deg,#26383d,#122128) !important;
+                    color:#b8f5d1 !important; font:24px/1 system-ui,sans-serif !important;
+                    box-shadow:0 7px 23px #0005, inset 0 1px #ffffff1f !important;
+                    z-index:2147483647 !important; cursor:pointer !important; display:flex !important;
+                    justify-content:center !important; align-items:center !important;
+                    transition:background .15s,transform .15s,border-color .15s !important; }
+                #${ID}-gear:hover, #${ID}-gear.open { background:#29474b !important; border-color:#76c7a8 !important; }
+                #${ID}-gear:active { transform:scale(.96) !important; }
+                #${ID}-gear.active { color:#fff !important; border-color:#ee8989 !important; background:#69373d !important; }
+                #${ID}-gear:focus-visible, #${ID}-panel button:focus-visible, .${ID}-download:focus-visible {
+                    outline:2px solid #a9e5ff !important; outline-offset:3px !important; }
+                #${ID}-panel { position:fixed !important; left:20px !important; bottom:80px !important;
+                    width:min(338px,calc(100vw - 32px)) !important; max-height:calc(100vh - 108px) !important;
+                    overflow-y:auto !important; padding:0 !important; border:1px solid #465d62 !important;
+                    border-radius:17px !important; background:#172328 !important; color:#eaf4f3 !important;
+                    box-shadow:0 18px 60px #0009,0 2px 10px #0005 !important;
+                    z-index:2147483646 !important; font:13px/1.45 system-ui,-apple-system,sans-serif !important; }
+                #${ID}-panel[hidden] { display:none !important; }
+                #${ID}-panel * { box-sizing:border-box !important; font-family:inherit !important; }
+                #${ID}-panel .${ID}-head { display:flex !important; align-items:center !important;
+                    justify-content:space-between !important; gap:12px !important;
+                    padding:16px 16px 13px !important; border-bottom:1px solid #34484e !important; }
+                #${ID}-panel .${ID}-brand { display:flex !important; align-items:center !important; gap:10px !important; }
+                #${ID}-panel .${ID}-logo { display:grid !important; place-items:center !important;
+                    width:35px !important; height:35px !important; border-radius:11px !important;
+                    background:#315047 !important; color:#b9f6d5 !important; font-size:20px !important; }
+                #${ID}-panel .${ID}-title { color:#f4fbf8 !important; font-size:14px !important;
+                    font-weight:750 !important; letter-spacing:.1px !important; }
+                #${ID}-panel .${ID}-version { color:#9ab3b6 !important; font-size:11px !important; margin-top:1px !important; }
+                #${ID}-panel button { cursor:pointer !important; }
+                #${ID}-panel .${ID}-close { border:0 !important; background:#2c3e43 !important; color:#d2e4e4 !important;
+                    width:30px !important; height:30px !important; border-radius:9px !important; font-size:20px !important; }
+                #${ID}-panel .${ID}-body { padding:14px 16px 16px !important; }
+                #${ID}-panel .${ID}-status { display:flex !important; align-items:center !important;
+                    gap:9px !important; background:#23363b !important; border:1px solid #385157 !important;
+                    border-radius:11px !important; padding:10px 11px !important; margin-bottom:15px !important; }
+                #${ID}-indicator { width:8px !important; height:8px !important; border-radius:50% !important;
+                    flex:0 0 8px !important; background:#8ea1a5 !important; }
+                #${ID}-indicator[data-tone=ready], #${ID}-indicator[data-tone=success] { background:#72dfaa !important; }
+                #${ID}-indicator[data-tone=busy] { background:#f7c77d !important; }
+                #${ID}-indicator[data-tone=error] { background:#fa8c8c !important; }
+                #${ID}-panel .${ID}-section { font-size:11px !important; font-weight:700 !important;
+                    color:#a3b8b9 !important; letter-spacing:.07em !important; text-transform:uppercase !important;
+                    margin-bottom:8px !important; }
+                #${ID}-panel .${ID}-actions { display:grid !important; gap:7px !important; }
+                #${ID}-panel .${ID}-action { display:flex !important; justify-content:space-between !important;
+                    align-items:center !important; width:100% !important; text-align:left !important;
+                    border:1px solid #3d5358 !important; border-radius:10px !important; padding:10px 11px !important;
+                    color:#ecf5f2 !important; background:#26393e !important; font-size:12px !important; font-weight:600 !important; }
+                #${ID}-panel .${ID}-action:hover { background:#325047 !important; border-color:#6cae94 !important; }
+                #${ID}-panel .${ID}-action span:last-child { color:#a2beb9 !important; font-size:12px !important; }
+                #${ID}-panel .${ID}-foot { margin-top:15px !important; padding-top:12px !important;
+                    border-top:1px solid #35494f !important; color:#9cafb0 !important; font-size:11px !important; }
+                #${ID}-panel .${ID}-reset { border:0 !important; padding:5px 0 !important;
+                    background:transparent !important; color:#b8ebd1 !important; font-size:11px !important; }
+                #${ID}-panel .${ID}-reset:hover { text-decoration:underline !important; }
                 .${ID}-download { position:absolute !important; right:84px !important; top:50% !important;
                     transform:translateY(-50%) !important; z-index:2147483000 !important;
-                    color:#101010 !important; background:#7ee83f !important; border:0 !important;
-                    border-radius:6px !important; padding:7px 10px !important; font:600 13px sans-serif !important;
-                    cursor:pointer !important; white-space:nowrap !important; }
+                    border:1px solid #a2eec5 !important; border-radius:9px !important; padding:8px 12px !important;
+                    color:#10352a !important; background:linear-gradient(180deg,#b4f4d1,#7fe0af) !important;
+                    font:700 12px/1.2 system-ui,sans-serif !important; letter-spacing:.1px !important;
+                    cursor:pointer !important; white-space:nowrap !important;
+                    box-shadow:0 2px 8px #0003 !important; transition:filter .15s,box-shadow .15s !important; }
+                .${ID}-download:hover { filter:brightness(1.06) !important; box-shadow:0 3px 12px #0004 !important; }
                 .${ID}-download.${ID}-preview { right:15px !important; top:auto !important;
                     bottom:15px !important; transform:none !important; }
                 .${ID}-download:disabled { opacity:.65 !important; cursor:progress !important; }
-                .${ID}-highlight { outline:3px dashed #ff6060 !important; cursor:crosshair !important; }
-                #${ID}-toast { position:fixed !important; left:22px !important; bottom:82px !important;
-                    max-width:min(380px,85vw) !important; padding:9px 13px !important;
-                    border-radius:7px !important; background:#151515 !important; color:#fff !important;
-                    font:13px/1.4 sans-serif !important; box-shadow:0 3px 14px #0008 !important;
+                .${ID}-highlight { outline:3px dashed #f0b474 !important; outline-offset:2px !important;
+                    background-color:#eda94b15 !important; cursor:crosshair !important; }
+                #${ID}-toast { position:fixed !important; left:20px !important; bottom:80px !important;
+                    max-width:min(380px,calc(100vw - 32px)) !important; padding:11px 14px !important;
+                    border-radius:11px !important; border:1px solid #496266 !important;
+                    background:#1b3036 !important; color:#edf8f3 !important;
+                    font:12px/1.5 system-ui,sans-serif !important; box-shadow:0 8px 24px #0007 !important;
                     z-index:2147483647 !important; pointer-events:none !important; }
                 #${ID}-toast[hidden] { display:none !important; }
+                @media(max-width:520px) { #${ID}-gear { left:12px !important; bottom:12px !important; }
+                    #${ID}-panel { left:12px !important; bottom:70px !important; }
+                    #${ID}-toast { left:12px !important; bottom:70px !important; } }
+                @media(prefers-reduced-motion:reduce) { #${ID}-gear,.${ID}-download { transition:none !important; } }
             `;
             (document.head || document.documentElement).appendChild(style);
         }
@@ -383,15 +498,51 @@
             gear.id = `${ID}-gear`;
             gear.type = 'button';
             gear.textContent = state.configuration ? '×' : '⚙';
-            gear.setAttribute('aria-label', 'Configurar seletores do Envato Master');
+            gear.setAttribute('aria-label', 'Abrir painel Envato Master');
+            gear.setAttribute('aria-haspopup', 'true');
+            gear.setAttribute('aria-expanded', String(state.panelOpen));
+            gear.setAttribute('aria-controls', `${ID}-panel`);
             gear.setAttribute('aria-pressed', String(state.configuration));
-            gear.title = 'Configurar seletores dos cards, players e títulos';
+            gear.title = 'Envato Master: abrir configurações';
             gear.addEventListener('click', event => {
                 event.preventDefault();
                 event.stopPropagation();
-                toggleConfiguration();
+                if (state.configuration) toggleConfiguration(false);
+                else setPanelOpen(!state.panelOpen);
             });
             document.body.appendChild(gear);
+        }
+        if (!document.getElementById(`${ID}-panel`)) {
+            const panel = document.createElement('section');
+            panel.id = `${ID}-panel`;
+            panel.setAttribute('aria-label', 'Configurações do Envato Master');
+            panel.hidden = !state.panelOpen;
+            panel.innerHTML = `
+                <div class="${ID}-head">
+                    <div class="${ID}-brand"><span class="${ID}-logo" aria-hidden="true">♫</span>
+                        <div><div class="${ID}-title">Envato Audio Master</div>
+                            <div class="${ID}-version">Prévia de áudio · v2.3.0</div></div></div>
+                    <button class="${ID}-close" type="button" data-action="close" aria-label="Fechar painel">×</button>
+                </div>
+                <div class="${ID}-body">
+                    <div class="${ID}-status" role="status" aria-live="polite">
+                        <span id="${ID}-indicator" data-tone="${state.uiTone}"></span>
+                        <span id="${ID}-status"></span>
+                    </div>
+                    <div class="${ID}-section">Selecionar elementos da página</div>
+                    <div class="${ID}-actions">
+                        <button class="${ID}-action" type="button" data-action="pick-card"><span>Card de áudio</span><span>Selecionar ↗</span></button>
+                        <button class="${ID}-action" type="button" data-action="pick-preview"><span>Player individual</span><span>Selecionar ↗</span></button>
+                        <button class="${ID}-action" type="button" data-action="pick-title"><span>Título da faixa</span><span>Selecionar ↗</span></button>
+                    </div>
+                    <div class="${ID}-foot">
+                        Apenas prévias públicas ou autorizadas. O download não concede licença.<br>
+                        <button type="button" class="${ID}-reset" data-action="reset">Restaurar seletores padrão</button>
+                    </div>
+                </div>`;
+            panel.addEventListener('click', handlePanelAction);
+            document.body.appendChild(panel);
+            setUiStatus(state.uiStatus, state.uiTone);
         }
     }
 
@@ -399,6 +550,11 @@
         ensureUi();
         document.addEventListener('pointerdown', onPointerDown, true);
         document.addEventListener('play', onPlay, true);
+        document.addEventListener('keydown', event => {
+            if (event.key !== 'Escape') return;
+            if (state.configuration) { toggleConfiguration(false); toast('Seleção cancelada.'); }
+            else if (state.panelOpen) setPanelOpen(false);
+        }, true);
         try {
             const observer = new PerformanceObserver(list => {
                 for (const entry of list.getEntries()) bindResource(entry.name);
@@ -407,7 +563,7 @@
         } catch (error) { log('PerformanceObserver indisponível', error); }
         // Apenas restaura os controles se a navegação SPA recriar o DOM.
         const domObserver = new MutationObserver(() => {
-            if (document.getElementById(`${ID}-gear`) && document.getElementById(`${ID}-styles`)) return;
+            if (document.getElementById(`${ID}-gear`) && document.getElementById(`${ID}-styles`) && document.getElementById(`${ID}-panel`)) return;
             if (state.domTimer) return;
             state.domTimer = setTimeout(() => {
                 state.domTimer = null;
@@ -415,7 +571,7 @@
             }, 250);
         });
         domObserver.observe(document.documentElement, { childList: true, subtree: true });
-        log('Versão 2.2.0 iniciada:', location.pathname);
+        log('Versão 2.3.0 iniciada:', location.pathname);
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
